@@ -99,12 +99,15 @@ def write_tokens_info_to_csv(tokens_info, file_path):
 
 if __name__ == '__main__':
     while True:
-        txns = getAllTransactions(RAYDIUM_ADDRESS, limit=1000)
-        print('')
-        print('Collecting mint addresses...')
-        mints = collect_mint_addresses(txns)
-        print('Extracting token names and symbols...')
-        tokens_info = get_tokens_info_parallel(mints,8)
-        write_tokens_info_to_csv(tokens_info, 'names_and_symbols.csv')
-        time.sleep(RERUN_DELAY)
+        try:
+            txns = getAllTransactions(RAYDIUM_ADDRESS, limit=1000)
+            print('')
+            print('Collecting mint addresses...')
+            mints = collect_mint_addresses(txns)
+            print('Extracting token names and symbols...')
+            tokens_info = get_tokens_info_parallel(mints,8)
+            write_tokens_info_to_csv(tokens_info, 'names_and_symbols.csv')
+            time.sleep(RERUN_DELAY)
+        except:
+            time.sleep(600)
 
