@@ -106,7 +106,7 @@ if __name__ == '__main__':
             mints = collect_mint_addresses(txns)
             print('Extracting token names and symbols...')
             tokens_info = get_tokens_info_parallel(mints,8)
-            write_tokens_info_to_csv(tokens_info, 'names_and_symbols.csv')
+            write_tokens_info_to_csv(tokens_info, 'data/names_and_symbols.csv')
             time.sleep(RERUN_DELAY)
         except:
             time.sleep(600)
