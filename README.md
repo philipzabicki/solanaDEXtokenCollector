@@ -22,4 +22,26 @@ It leverages machine learning models to predict the potential of new token pairs
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/philipzabicki/solanaDEXtokenCollector.git```
+   git clone https://github.com/philipzabicki/solanaDEXtokenCollector.git
+
+2. Navigate to the project directory:
+   ```bash
+   cd solanaDEXtokenCollector
+
+3. Install the necessary dependencies:
+   ```bash
+   pip install -r requirements.txt
+
+## Usage
+### Sniping New Pools
+The snipe.py script is designed to detect and analyze new liquidity pools. Here’s how to use it:
+
+1. Ensure you have the necessary trained models in the models directory:
+- 'token_names_model.bin'
+- 'token_symbols_model.bin'
+- 'scaler_model.pkl'
+- 'rf_model.joblib'
+
+2. Run the script:
+   ```bash
+   python snipe.py
