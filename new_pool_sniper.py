@@ -16,7 +16,7 @@ LAUNCH_TIME = timedelta(minutes=2)
 # Time during which the token pair is skipped
 SKIP_TIME = timedelta(minutes=3)
 # Delay for classifying the token pair after its creation
-CLASSIFY_DELAY = timedelta(hours=1)
+CLASSIFY_DELAY = timedelta(hours=24)
 # List of time intervals for technical analysis
 ITVS = ['1m', '5m', '15m', '1h', '4h', '1d']
 # Global asynchronous lock used to synchronize access to the CSV file
@@ -34,10 +34,6 @@ def check_credentials(api_key: str, secret_key: str) -> None:
             "binance_SECRET_KEY = 'your_secret_key_here'\n\n"
             "How to get API: https://www.binance.com/pl/binance-api"
         )
-
-
-check_credentials(binance_API_KEY, binance_SECRET_KEY)
-CLIENT = UMFutures(binance_API_KEY, binance_SECRET_KEY)
 
 
 # Fetch new tokens from geckoterminal API
@@ -120,7 +116,9 @@ async def get_details_dict(detail: dict, tas_dict: dict = None) -> dict:
                 "pairCreatedAt": datetime.fromtimestamp(detail["pairCreatedAt"] / 1000).strftime('%Y-%m-%d %H:%M:%S')}
     # If tas_dict is not provided, fetch technical analysis data for SOLUSDT and BTCUSDT
     if tas_dict is None:
-        tas_dict = fetch_ta(CLIENT, 'SOLUSDT', ITVS) | fetch_ta(CLIENT, 'BTCUSDT', ITVS) | {"worthy": -1}
+        check_credentials(binance_API_KEY, binance_SECRET_KEY)
+        client = UMFutures(binance_API_KEY, binance_SECRET_KEY)
+        tas_dict = fetch_ta(client, 'SOLUSDT', ITVS) | fetch_ta(client, 'BTCUSDT', ITVS) | {"worthy": -1}
     # Update det_dict with the technical analysis data
     det_dict.update(tas_dict)
     return det_dict
@@ -128,7 +126,7 @@ async def get_details_dict(detail: dict, tas_dict: dict = None) -> dict:
 
 # Function to save token details to a CSV file
 async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
-                      filename: str = "data/tokens_details_ext.csv") -> None:
+                      filename: str = "data/tokens_raw.csv") -> None:
     # TODO: Globalise dummy_dict for speed up
     global LOCK
     # Fetch a sample dictionary of token details
@@ -149,10 +147,10 @@ async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
 
 
 # Function to classify tokens based on specific criteria
-async def classify(session: aiohttp.ClientSession, price_mul: float = 1.5, fdv_mul: float = 1.2, liqU_ml: float = 1.2,
-                   fdv_min: float = 1_000, liqU_min: float = 1_000) -> None:
+async def classify(session: aiohttp.ClientSession, price_mul: float = 2.0, fdv_mul: float = 2.0, liqU_ml: float = 2.0,
+                   fdv_min: float = 10_000, liqU_min: float = 10_000) -> None:
     # TODO: Handle other than default criteria, without destroying classification model
-    df = pd.read_csv('data/tokens_details_ext.csv')
+    df = pd.read_csv('data/tokens_raw.csv')
     df.drop_duplicates(subset=['pairAddress'], inplace=True)
     df['pairCreatedAt'] = pd.to_datetime(df['pairCreatedAt'])
     print('Classifying...')
@@ -162,23 +160,27 @@ async def classify(session: aiohttp.ClientSession, price_mul: float = 1.5, fdv_m
             now = datetime.now()
             if now - creation_time >= CLASSIFY_DELAY:
                 url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{row['pairAddress']}"
-                async with session.get(url) as response:
-                    cur = (await response.json())['pair']
-                    # Check if the token pair meets the specified criteria
-                    if (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
-                            cur['fdv'] > row['fdv'] * fdv_mul) and (
-                            cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
-                            cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
-                        print(f'### {row["pairAddress"]} seems worthy ###')
-                        print(
-                            f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
-                        df.at[i, 'worthy'] = 1
-                    else:
-                        print(f'{row["pairAddress"]} not worthy')
-                        df.at[i, 'worthy'] = 0
+                try:
+                    async with session.get(url) as response:
+                        cur = (await response.json())['pair']
+                        # Check if the token pair meets the specified criteria
+                        if (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
+                                cur['fdv'] > row['fdv'] * fdv_mul) and (
+                                cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
+                                cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
+                            print(f'### {row["pairAddress"]} seems worthy ###')
+                            print(
+                                f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
+                            df.at[i, 'worthy'] = 1
+                        else:
+                            print(f'{row["pairAddress"]} not worthy')
+                            df.at[i, 'worthy'] = 0
+                except Exception as e:
+                    print(e)
+                    df.at[i, 'worthy'] = 0
             else:
                 print(f'{row["pairAddress"]}, pair age: {now - creation_time}')
-    df.to_csv('data/tokens_details_ext.csv', index=False)
+    df.to_csv('data/tokens_raw.csv', index=False)
 
 
 # Main loop to continuously fetch, save, and classify tokens

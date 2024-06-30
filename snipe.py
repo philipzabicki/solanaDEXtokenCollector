@@ -4,8 +4,10 @@ import fasttext
 import joblib
 import aiohttp
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import asyncio
+import webbrowser
 
 LAUNCH_TIME = timedelta(minutes=0)
 SKIP_TIME = timedelta(minutes=2)
@@ -15,9 +17,9 @@ PRED_ENUMS = {0: 'AVOID', 1: "BUY"}
 async def get_input(df: pd.DataFrame, scaler, names_model, symbols_model) -> pd.DataFrame:
     # Extract word vectors for token names and symbols using the FastText models
     names_vectors = df['baseTokenName'].apply(lambda x: pd.Series(names_model.get_word_vector(x)))
-    names_vectors.columns = [f'nameVectorDim{i}' for i in range(24)]
+    names_vectors.columns = [f'nameVectorDim{i}' for i in range(30)]
     symbols_vectors = df['baseTokenSymbol'].apply(lambda x: pd.Series(symbols_model.get_word_vector(x)))
-    symbols_vectors.columns = [f'symbolVectorDim{i}' for i in range(12)]
+    symbols_vectors.columns = [f'symbolVectorDim{i}' for i in range(15)]
 
     # Remove original name and symbol columns
     df.drop(columns=['baseTokenName', 'baseTokenSymbol'], inplace=True)
@@ -26,7 +28,7 @@ async def get_input(df: pd.DataFrame, scaler, names_model, symbols_model) -> pd.
     ret = pd.concat([df, names_vectors, symbols_vectors], axis=1)
 
     # Transform the DataFrame using the provided scaler
-    return scaler.transform(ret)
+    return pd.DataFrame(scaler.transform(ret), columns=ret.columns).drop(columns='worthy')
 
 
 async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
@@ -59,8 +61,8 @@ async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
     }
 
     # Calculate liquidity to FDV ratio, set to 0 if conditions are not met
-    liq = {"liq_fdv_ratio": detail["liquidity_usd"] / detail["fdv"] if "liquidity_usd" in detail and detail[
-        "fdv"] > 0 else 0.0}
+    liq = {"worthy": -1,
+           "liq_fdv_ratio": detail["liquidity_usd"] / detail["fdv"] if "liquidity_usd" in detail and detail["fdv"] > 0 else 0.0}
 
     # Fetch technical analysis data if not provided
     if tas_dict is None:
@@ -69,19 +71,23 @@ async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
     # Update the details dictionary with technical analysis and liquidity data
     det_dict.update(tas_dict | liq)
 
+    # print(det_dict.keys())
     # Convert the dictionary to a DataFrame
     return pd.DataFrame([det_dict])
 
 
 async def main():
     # Load token names FastText model
-    model_n = fasttext.load_model('models/token_names_model.bin')
+    model_n = fasttext.load_model('models/names2vec_model.bin')
     # Load token symbols FastText model
-    model_s = fasttext.load_model('models/token_symbols_model.bin')
+    model_s = fasttext.load_model('models/symbols2vec_model.bin')
     # Load scaler model
-    scaler = joblib.load('models/scaler_model.pkl')
-    # Load predictive model
-    rf_model = joblib.load('models/rf_model.joblib')
+    scaler = joblib.load('models/std_scaler.pkl')
+    # Load predictive models
+    rf_model = joblib.load('models/dumb_rf_model.joblib')
+    svm_model = joblib.load('models/dumb_svm_model.joblib')
+    lr_model = joblib.load('models/dumb_lr_model.joblib')
+    gb_model = joblib.load('models/dumb_gb_model.joblib')
 
     seen_addresses = deque(maxlen=200)  # Track seen addresses with a maximum length
 
@@ -101,15 +107,26 @@ async def main():
                         seen_addresses.append(token['pairAddress'])  # Append the seen address
                         features_df = await get_features_df(token, tas_dict)
                         input_data = await get_input(features_df, scaler, model_n, model_s)
-                        pred = rf_model.predict(input_data)
-
-                        print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', end=' ')
-                        print(
-                            f'Prediction: {PRED_ENUMS[pred[0]]} Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}',
-                            end=' ')
+                        # input_data = np.delete(input_data, -47, axis=1)
+                        # print(type(input_data))
+                        # print(input_data[:,-47])
+                        rf_pred = rf_model.predict(input_data)
+                        svm_pred = svm_model.predict(input_data)
+                        lr_pred = lr_model.predict(input_data)
+                        gb_pred = gb_model.predict(input_data)
+                        sum_preds = (rf_pred[0]+svm_pred[0]+lr_pred[0]+gb_pred[0])
+                        print('##################################################')
+                        print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+                        print(f'Predictions: {sum_preds}/4')
+                        print(f'RF/SVM/GB/LR {PRED_ENUMS[rf_pred[0]]}/{PRED_ENUMS[svm_pred[0]]}/{PRED_ENUMS[gb_pred[0]]}/{PRED_ENUMS[lr_pred[0]]}')
+                        print(f'Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}')
                         print(f'url: {token["url"]}')
+                        print('##################################################')
+                        if sum_preds > 2:
+                            webbrowser.open(token["url"])
                 else:
-                    print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No valid pairs for now...")
+                    pass
+                    # print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No valid pairs for now...")
 
             # Wait for a minute before fetching new tokens again
             await asyncio.sleep(60)  # Note: Increased sleep time to 60 seconds for practical purposes
