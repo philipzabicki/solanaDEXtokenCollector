@@ -12,15 +12,16 @@ from os import path
 from datetime import datetime, timezone, timedelta
 
 # Time from the token pair launch to its acceptance as a valid pair
-LAUNCH_TIME = timedelta(minutes=2)
+LAUNCH_TIME = timedelta(minutes=1)
 # Time during which the token pair is skipped
-SKIP_TIME = timedelta(minutes=3)
+SKIP_TIME = timedelta(minutes=5)
 # Delay for classifying the token pair after its creation
 CLASSIFY_DELAY = timedelta(hours=24)
 # List of time intervals for technical analysis
 ITVS = ['1m', '5m', '15m', '1h', '4h', '1d']
 # Global asynchronous lock used to synchronize access to the CSV file
 LOCK = asyncio.Lock()
+DUMMY_DETAILS_DICT = None
 
 
 # Function to check if Binance API credentials are provided
@@ -45,17 +46,22 @@ async def fetch_new_tokens(session: aiohttp.ClientSession) -> dict:
 
 
 # Fetch details of valid pairs from dexscreener API
-async def fetch_valid_pairs_details(session: aiohttp.ClientSession, address_list: list[str]) -> list[dict]:
+async def fetch_valid_pairs_details(session: aiohttp.ClientSession, address_list: list[str], verbose: bool = True) -> \
+        list[dict]:
     url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{','.join(address_list)}"
     async with session.get(url) as response:
         response_json = await response.json()
         valid_pairs = []
         now = datetime.now(timezone.utc)
+        if response_json['pairs'] is None:
+            print(f'The URL response (pairs list) is None for list of addresses: {address_list}')
+            return valid_pairs
         for pair in response_json['pairs']:
             creation_time = datetime.fromtimestamp(pair['pairCreatedAt'] / 1000, tz=timezone.utc)
             if SKIP_TIME > (now - creation_time) > LAUNCH_TIME:
                 valid_pairs.append(pair)
-                print(f' valid pair address: {pair["pairAddress"]}')
+                if verbose:
+                    print(f' valid pair address: {pair["pairAddress"]}')
         return valid_pairs
 
 
@@ -116,7 +122,6 @@ async def get_details_dict(detail: dict, tas_dict: dict = None) -> dict:
                 "pairCreatedAt": datetime.fromtimestamp(detail["pairCreatedAt"] / 1000).strftime('%Y-%m-%d %H:%M:%S')}
     # If tas_dict is not provided, fetch technical analysis data for SOLUSDT and BTCUSDT
     if tas_dict is None:
-        check_credentials(binance_API_KEY, binance_SECRET_KEY)
         client = UMFutures(binance_API_KEY, binance_SECRET_KEY)
         tas_dict = fetch_ta(client, 'SOLUSDT', ITVS) | fetch_ta(client, 'BTCUSDT', ITVS) | {"worthy": -1}
     # Update det_dict with the technical analysis data
@@ -127,11 +132,11 @@ async def get_details_dict(detail: dict, tas_dict: dict = None) -> dict:
 # Function to save token details to a CSV file
 async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
                       filename: str = "data/tokens_raw.csv") -> None:
-    # TODO: Globalise dummy_dict for speed up
-    global LOCK
+    global LOCK, DUMMY_DETAILS_DICT
     # Fetch a sample dictionary of token details
-    dummy_dict = (await get_details_dict(token_details[0]))
-    headers = list(dummy_dict.keys())
+    if DUMMY_DETAILS_DICT is None:
+        DUMMY_DETAILS_DICT = (await get_details_dict(token_details[0]))
+    headers = list(DUMMY_DETAILS_DICT.keys())
     # Locks file until code block completed
     async with LOCK:
         file_exists = path.isfile(filename)
@@ -141,9 +146,13 @@ async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
             if not file_exists:
                 writer.writeheader()
             for detail in token_details:
-                row = (await get_details_dict(detail))
-                print(f' writing row {row["baseTokenName"]} {row["pairAddress"]}')
-                writer.writerow(row)
+                try:
+                    row = (await get_details_dict(detail))
+                    print(f' writing row {row["baseTokenName"]} {row["pairAddress"]}')
+                    writer.writerow(row)
+                except KeyError as e:
+                    print(f'Skipping pair with address: {detail["pairAddress"]} due to error')
+                    print(e)
 
 
 # Function to classify tokens based on specific criteria
@@ -175,8 +184,11 @@ async def classify(session: aiohttp.ClientSession, price_mul: float = 2.0, fdv_m
                         else:
                             print(f'{row["pairAddress"]} not worthy')
                             df.at[i, 'worthy'] = 0
-                except Exception as e:
-                    print(e)
+                except TypeError as error:
+                    print('###################################################################')
+                    print(error)
+                    print(f'Classification of token with address: {row["pairAddress"]} failed. Setting worthy feature '
+                          f'to 0.')
                     df.at[i, 'worthy'] = 0
             else:
                 print(f'{row["pairAddress"]}, pair age: {now - creation_time}')
@@ -185,6 +197,7 @@ async def classify(session: aiohttp.ClientSession, price_mul: float = 2.0, fdv_m
 
 # Main loop to continuously fetch, save, and classify tokens
 async def main_loop() -> None:
+    check_credentials(binance_API_KEY, binance_SECRET_KEY)
     async with aiohttp.ClientSession() as session:
         while True:
             new_tokens = await fetch_new_tokens(session)
@@ -197,7 +210,7 @@ async def main_loop() -> None:
                 else:
                     print(f"No valid pairs for now {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             await classify(session)
-            await asyncio.sleep(30)
+            await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
