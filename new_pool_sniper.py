@@ -169,27 +169,31 @@ async def classify(session: aiohttp.ClientSession, price_mul: float = 2.0, fdv_m
             now = datetime.now()
             if now - creation_time >= CLASSIFY_DELAY:
                 url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{row['pairAddress']}"
-                try:
-                    async with session.get(url) as response:
-                        cur = (await response.json())['pair']
-                        # Check if the token pair meets the specified criteria
-                        if (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
-                                cur['fdv'] > row['fdv'] * fdv_mul) and (
-                                cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
-                                cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
-                            print(f'### {row["pairAddress"]} seems worthy ###')
-                            print(
-                                f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
-                            df.at[i, 'worthy'] = 1
-                        else:
-                            print(f'{row["pairAddress"]} not worthy')
-                            df.at[i, 'worthy'] = 0
-                except TypeError as error:
-                    print('###################################################################')
-                    print(error)
-                    print(f'Classification of token with address: {row["pairAddress"]} failed. Setting worthy feature '
-                          f'to 0.')
-                    df.at[i, 'worthy'] = 0
+                # try:
+                async with session.get(url) as response:
+                    cur = (await response.json())['pair']
+                    # Check if the token pair meets the specified criteria
+                    if (cur is None) or (not all(feature in cur.keys() for feature in ['priceUsd', 'fdv', 'liquidity'])):
+                        print(f'Classification of token with address {row["pairAddress"]} failed due to lack of '
+                              f'key feature presence or None response. Setting worthy to 0.')
+                        df.at[i, 'worthy'] = 0
+                    elif (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
+                            cur['fdv'] > row['fdv'] * fdv_mul) and (
+                            cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
+                            cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
+                        print(f'### {row["pairAddress"]} seems worthy ###')
+                        print(
+                            f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
+                        df.at[i, 'worthy'] = 1
+                    else:
+                        print(f'{row["pairAddress"]} not worthy')
+                        df.at[i, 'worthy'] = 0
+                # except TypeError as error:
+                #     print('###################################################################')
+                #     print(error)
+                #     print(f'Classification of token with address {row["pairAddress"]} failed. Setting worthy '
+                #           f'to 0.')
+                #     df.at[i, 'worthy'] = 0
             else:
                 print(f'{row["pairAddress"]}, pair age: {now - creation_time}')
     df.to_csv('data/tokens_raw.csv', index=False)
