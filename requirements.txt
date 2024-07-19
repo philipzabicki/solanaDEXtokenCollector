@@ -1,0 +1,17 @@
+binance
+numpy
+joblib
+requests
+solana
+solders
+aiohttp
+pandas
+beepy
+seaborn
+fasttext-wheel
+pymoo
+binance-futures-connector
+scikit-learn==1.4.2
+plotly
+imblearn
+xgboost
