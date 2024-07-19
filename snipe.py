@@ -3,6 +3,7 @@ import aiohttp
 import pandas as pd
 import asyncio
 import webbrowser
+from beepy import beep
 from fasttext import load_model
 from new_pool_sniper import ITVS, fetch_valid_pairs_details, fetch_new_tokens, check_credentials, fetch_ta
 from credentials import binance_API_KEY, binance_SECRET_KEY
@@ -133,8 +134,11 @@ async def main():
                             print(f'Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}')
                             print(f'url: {token["url"]}')
                             print('##################################################')
-                            if sum_preds > 2:
+                            if sum_preds == 2:
+                                for _ in range(1): beep(sound='coin')
+                            elif sum_preds > 2:
                                 webbrowser.open(token["url"])
+                                for _ in range(3): beep(sound='coin')
                 else:
                     pass
                     # print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No valid pairs for now...")

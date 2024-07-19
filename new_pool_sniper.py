@@ -57,11 +57,12 @@ async def fetch_valid_pairs_details(session: aiohttp.ClientSession, address_list
             print(f'The URL response (pairs list) is None for list of addresses: {address_list}')
             return valid_pairs
         for pair in response_json['pairs']:
-            creation_time = datetime.fromtimestamp(pair['pairCreatedAt'] / 1000, tz=timezone.utc)
-            if SKIP_TIME > (now - creation_time) > LAUNCH_TIME:
-                valid_pairs.append(pair)
-                if verbose:
-                    print(f' valid pair address: {pair["pairAddress"]}')
+            if ('pairCreatedAt' in pair.keys()) and ("pairAddress" in pair.keys()):
+                creation_time = datetime.fromtimestamp(pair['pairCreatedAt'] / 1000, tz=timezone.utc)
+                if SKIP_TIME > (now - creation_time) > LAUNCH_TIME:
+                    valid_pairs.append(pair)
+                    if verbose:
+                        print(f' valid pair address: {pair["pairAddress"]}')
         return valid_pairs
 
 
