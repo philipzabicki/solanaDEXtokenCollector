@@ -126,19 +126,20 @@ async def main():
                             lr_pred = lr_model.predict(input_data)
                             gb_pred = gb_model.predict(input_data)
                             sum_preds = int(rf_pred[0]+svm_pred[0]+lr_pred[0]+gb_pred[0])
-                            print('##################################################')
-                            print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")}')
-                            print(f'PREDICTIONS')
-                            print(f' summary: {sum_preds}/4')
-                            print(f' models RF/SVM/GB/LR: {PRED_ENUMS[rf_pred[0]]}/{PRED_ENUMS[svm_pred[0]]}/{PRED_ENUMS[gb_pred[0]]}/{PRED_ENUMS[lr_pred[0]]}')
-                            print(f'Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}')
-                            print(f'url: {token["url"]}')
-                            print('##################################################')
-                            if sum_preds == 2:
-                                for _ in range(1): beep(sound='coin')
-                            elif sum_preds > 2:
-                                webbrowser.open(token["url"])
-                                for _ in range(3): beep(sound='coin')
+                            if sum_preds >= 2:
+                                for _ in range(2): beep(sound='coin')
+                                print('##################################################')
+                                print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")}')
+                                print(f'PREDICTIONS')
+                                print(f' summary: {sum_preds}/4')
+                                print(
+                                    f' models RF/SVM/GB/LR: {PRED_ENUMS[rf_pred[0]]}/{PRED_ENUMS[svm_pred[0]]}/{PRED_ENUMS[gb_pred[0]]}/{PRED_ENUMS[lr_pred[0]]}')
+                                print(f'Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}')
+                                print(f'url: {token["url"]}')
+                                print('##################################################')
+                                if sum_preds > 2:
+                                    webbrowser.open(token["url"])
+                                    for _ in range(5): beep(sound='coin')
                 else:
                     pass
                     # print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No valid pairs for now...")
