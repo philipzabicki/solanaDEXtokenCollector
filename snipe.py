@@ -3,18 +3,34 @@ import aiohttp
 import pandas as pd
 import asyncio
 import webbrowser
+from numpy import mean
 from beepy import beep
 from fasttext import load_model
 from new_pool_sniper import ITVS, fetch_valid_pairs_details, fetch_new_tokens, check_credentials, fetch_ta
-from credentials import binance_API_KEY, binance_SECRET_KEY
+from credentials import *
 from binance.um_futures import UMFutures
 from collections import deque
 from datetime import datetime, timedelta
+import re
+import unicodedata
+
 
 LAUNCH_TIME = timedelta(minutes=0)
-SKIP_TIME = timedelta(minutes=2)
+SKIP_TIME = timedelta(minutes=3)
 PRED_ENUMS = {0: 'AVOID', 1: "BUY"}
+CHAT_IDs = ['5011277677', '7228159263']
 
+
+def clean_string(s):
+    if isinstance(s, str):
+        # Usuń niewidoczne znaki kontrolne
+        s = ''.join(c for c in s if unicodedata.category(c)[0] != 'C')
+        # Zastąp nadmiarowe białe znaki pojedynczą spacją
+        s = re.sub(r'\s+', ' ', s)
+        # Usuń białe znaki z początku i końca
+        return s.strip()
+    else:
+        return s
 
 async def get_input(df: pd.DataFrame, scaler, names_model, symbols_model) -> pd.DataFrame:
     # Extract word vectors for token names and symbols using the FastText models
@@ -37,8 +53,8 @@ async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
     # Construct a dictionary with various token details and transaction statistics
     try:
         det_dict = {
-            "baseTokenName": detail["baseToken"]["name"],
-            "baseTokenSymbol": detail["baseToken"]["symbol"],
+            "baseTokenName": clean_string(detail["baseToken"]["name"]),
+            "baseTokenSymbol": clean_string(detail["baseToken"]["symbol"]),
             "priceNative": detail["priceNative"],
             "priceUsd": detail["priceUsd"],
             "txns_m5_buys": detail["txns"]["m5"]["buys"],
@@ -84,21 +100,33 @@ async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
     return pd.DataFrame([det_dict])
 
 
+async def send_telegram_message(session, message: str, chat_ids: list):
+    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
+    for chat_id in chat_ids:
+        payload = {
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'Markdown'  # Opcjonalnie, możesz użyć innego formatu
+        }
+        async with session.post(url, data=payload) as response:
+            if response.status != 200:
+                print(f'Failed to send message to {chat_id}: {response.status}')
+                resp_text = await response.text()
+                print(resp_text)
+
+
 async def main():
     check_credentials(binance_API_KEY, binance_SECRET_KEY)
-    # Load token names FastText model
+    # Load models
     model_n = load_model('models/names2vec_model.bin')
-    # Load token symbols FastText model
     model_s = load_model('models/symbols2vec_model.bin')
-    # Load scaler model
     scaler = joblib.load('models/std_scaler.pkl')
-    # Load predictive models
     rf_model = joblib.load('models/default_rf_model.joblib')
-    svm_model = joblib.load('models/default_svm_model.joblib')
+    # svm_model = joblib.load('models/default_svm_model.joblib')
     lr_model = joblib.load('models/default_lr_model.joblib')
-    gb_model = joblib.load('models/default_gb_model.joblib')
+    gb_model = joblib.load('models/default_xgb_model.joblib')
 
-    seen_addresses = deque(maxlen=500)  # Track seen addresses with a maximum length
+    seen_addresses = deque(maxlen=500)
 
     async with aiohttp.ClientSession() as session:
         client = UMFutures(binance_API_KEY, binance_SECRET_KEY)
@@ -106,46 +134,81 @@ async def main():
 
         while True:
             new_tokens = await fetch_new_tokens(session)
-
-            # Extract unique token addresses that have not been seen before
             addresses = list(set(token['attributes']['address'] for token in new_tokens) - set(seen_addresses))
 
             if addresses:
                 valid_details = await fetch_valid_pairs_details(session, addresses, verbose=False)
                 if valid_details:
                     for token in valid_details:
-                        seen_addresses.append(token['pairAddress'])  # Append the seen address
+                        seen_addresses.append(token['pairAddress'])
                         features_df = await get_features_df(token, tas_dict)
                         if not features_df.empty:
                             input_data = await get_input(features_df, scaler, model_n, model_s)
-                            # input_data = np.delete(input_data, -47, axis=1)
-                            # print(type(input_data))
-                            # print(input_data[:,-47])
-                            rf_pred = rf_model.predict(input_data)
-                            svm_pred = svm_model.predict(input_data)
-                            lr_pred = lr_model.predict(input_data)
-                            gb_pred = gb_model.predict(input_data)
-                            sum_preds = int(rf_pred[0]+svm_pred[0]+lr_pred[0]+gb_pred[0])
-                            if sum_preds >= 2:
+
+                            # Uzyskanie prawdopodobieństw zamiast predykcji binarnych
+                            rf_proba = rf_model.predict_proba(input_data)[0][1]
+                            # svm_proba = svm_model.predict_proba(input_data)[0][1]
+                            lr_proba = lr_model.predict_proba(input_data)[0][1]
+                            gb_proba = gb_model.predict_proba(input_data)[0][1]
+
+                            # Konwersja prawdopodobieństw na wartości binarne dla logiki sumowania
+                            # rf_pred = int(rf_proba > 0.5)
+                            # svm_pred = int(svm_proba > 0.5)
+                            # lr_pred = int(lr_proba > 0.5)
+                            # gb_pred = int(gb_proba > 0.5)
+
+                            # sum_preds = rf_proba + lr_proba + gb_proba
+                            mean_preds = mean([rf_proba, lr_proba, gb_proba], axis=0)
+
+                            if mean_preds > 0.5:
                                 for _ in range(2): beep(sound='coin')
                                 print('##################################################')
                                 print(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")}')
                                 print(f'PREDICTIONS')
-                                print(f' summary: {sum_preds}/4')
+                                print(f'Prob mean: {mean_preds * 100:.2f}%')
                                 print(
-                                    f' models RF/SVM/GB/LR: {PRED_ENUMS[rf_pred[0]]}/{PRED_ENUMS[svm_pred[0]]}/{PRED_ENUMS[gb_pred[0]]}/{PRED_ENUMS[lr_pred[0]]}')
+                                    f"RF: {rf_proba * 100:.2f}%\n"
+                                    f"xGB: {gb_proba * 100:.2f}%\n"
+                                    f"LR: {lr_proba * 100:.2f}%\n"
+                                )
                                 print(f'Name: {token["baseToken"]["name"]} Symbol: {token["baseToken"]["symbol"]}')
                                 print(f'url: {token["url"]}')
                                 print('##################################################')
-                                if sum_preds > 2:
+
+                                message = (
+                                    f"*Potent Token*\n\n"
+                                    f"*Name:* {token['baseToken']['name']}\n"
+                                    f"*Symbol:* {token['baseToken']['symbol']}\n"
+                                    f"*URL:* {token['url']}\n"
+                                    f"*Predictions mean probability:* {mean_preds * 100:.2f}%\n"
+                                    f"RF: {rf_proba * 100:.2f}%\n"
+                                    f"xGB: {gb_proba * 100:.2f}%\n"
+                                    f"LR: {lr_proba * 100:.2f}%\n"
+                                    f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                                )
+                                await send_telegram_message(session, message, CHAT_IDs)
+
+                                if mean_preds >= .75:
+                                    message = (
+                                        f"🔔🔔🔔*POTĘŻNY TOKEN (dla jego)!*🔔🔔🔔\n\n"
+                                        f"*Name:* {token['baseToken']['name']}\n"
+                                        f"*Symbol:* {token['baseToken']['symbol']}\n"
+                                        f"*URL:* {token['url']}\n"
+                                        f"*Predictions mean probability:* {mean_preds * 100:.2f}%\n"
+                                        f"RF: {rf_proba * 100:.2f}%\n"
+                                        f"xGB: {gb_proba * 100:.2f}%\n"
+                                        f"LR: {lr_proba * 100:.2f}%\n"
+                                        f"*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                                    )
+                                    await send_telegram_message(session, message, CHAT_IDs)
                                     webbrowser.open(token["url"])
                                     for _ in range(5): beep(sound='coin')
                 else:
                     pass
-                    # print(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} No valid pairs for now...")
+                    # Możesz dodać logowanie braku ważnych par, jeśli chcesz
 
-            # Wait for a minute before fetching new tokens again
-            await asyncio.sleep(60)  # Note: Increased sleep time to 60 seconds for practical purposes
+            # Czekaj przed kolejnym sprawdzeniem
+            await asyncio.sleep(10)  # Zmieniono na 60 sekund dla praktyczności
             tas_dict = fetch_ta(client, 'SOLUSDT', ITVS) | fetch_ta(client, 'BTCUSDT', ITVS)
 
 

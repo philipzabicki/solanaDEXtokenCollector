@@ -10,9 +10,11 @@ from talib import ADOSC, OBV, ATR, RSI, ULTOSC, TSF
 import pandas as pd
 from os import path
 from datetime import datetime, timezone, timedelta
+import shutil
+
 
 # Time from the token pair launch to its acceptance as a valid pair
-LAUNCH_TIME = timedelta(minutes=1)
+LAUNCH_TIME = timedelta(minutes=0)
 # Time during which the token pair is skipped
 SKIP_TIME = timedelta(minutes=5)
 # Delay for classifying the token pair after its creation
@@ -35,35 +37,6 @@ def check_credentials(api_key: str, secret_key: str) -> None:
             "binance_SECRET_KEY = 'your_secret_key_here'\n\n"
             "How to get API: https://www.binance.com/pl/binance-api"
         )
-
-
-# Fetch new tokens from geckoterminal API
-async def fetch_new_tokens(session: aiohttp.ClientSession) -> dict:
-    url = "https://api.geckoterminal.com/api/v2/networks/solana/new_pools"
-    async with session.get(url) as response:
-        response_json = await response.json()
-        return response_json['data']
-
-
-# Fetch details of valid pairs from dexscreener API
-async def fetch_valid_pairs_details(session: aiohttp.ClientSession, address_list: list[str], verbose: bool = True) -> \
-        list[dict]:
-    url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{','.join(address_list)}"
-    async with session.get(url) as response:
-        response_json = await response.json()
-        valid_pairs = []
-        now = datetime.now(timezone.utc)
-        if response_json['pairs'] is None:
-            print(f'The URL response (pairs list) is None for list of addresses: {address_list}')
-            return valid_pairs
-        for pair in response_json['pairs']:
-            if ('pairCreatedAt' in pair.keys()) and ("pairAddress" in pair.keys()):
-                creation_time = datetime.fromtimestamp(pair['pairCreatedAt'] / 1000, tz=timezone.utc)
-                if SKIP_TIME > (now - creation_time) > LAUNCH_TIME:
-                    valid_pairs.append(pair)
-                    if verbose:
-                        print(f' valid pair address: {pair["pairAddress"]}')
-        return valid_pairs
 
 
 # Function to fetch OHLCV data from Binance and calculate technical analysis indicators using TA-Lib
@@ -131,26 +104,31 @@ async def get_details_dict(detail: dict, tas_dict: dict = None) -> dict:
 
 
 # Function to save token details to a CSV file
-async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
-                      filename: str = "data/tokens_raw.csv") -> None:
+async def save_to_csv(token_details: list[dict],
+                      filename: str = "data/tokens_raw.csv",
+                      backup_filename: str = "data/tokens_raw_backup.csv") -> None:
     global LOCK, DUMMY_DETAILS_DICT
-    # Fetch a sample dictionary of token details
     if DUMMY_DETAILS_DICT is None:
         DUMMY_DETAILS_DICT = (await get_details_dict(token_details[0]))
     headers = list(DUMMY_DETAILS_DICT.keys())
-    # Locks file until code block completed
     async with LOCK:
         file_exists = path.isfile(filename)
-        with open(filename, 'a', newline='', encoding='utf-8') as file:
-            writer = csv.DictWriter(file, fieldnames=headers)
+        backup_file_exists = path.isfile(backup_filename)
+        with open(filename, 'a', newline='', encoding='utf-8') as file_main, \
+             open(backup_filename, 'a', newline='', encoding='utf-8') as file_backup:
+            writer_main = csv.DictWriter(file_main, fieldnames=headers)
+            writer_backup = csv.DictWriter(file_backup, fieldnames=headers)
 
             if not file_exists:
-                writer.writeheader()
+                writer_main.writeheader()
+            if not backup_file_exists:
+                writer_backup.writeheader()
             for detail in token_details:
                 try:
                     row = (await get_details_dict(detail))
-                    print(f' writing row {row["baseTokenName"]} {row["pairAddress"]}')
-                    writer.writerow(row)
+                    print(f'Writing row {row["baseTokenName"]} {row["pairAddress"]}')
+                    writer_main.writerow(row)
+                    writer_backup.writerow(row)
                 except KeyError as e:
                     print(f'Skipping pair with address: {detail["pairAddress"]} due to error')
                     print(e)
@@ -160,45 +138,75 @@ async def save_to_csv(session: aiohttp.ClientSession, token_details: list[dict],
 async def classify(session: aiohttp.ClientSession, price_mul: float = 2.0, fdv_mul: float = 2.0, liqU_ml: float = 2.0,
                    fdv_min: float = 10_000, liqU_min: float = 10_000) -> None:
     # TODO: Handle other than default criteria, without destroying classification model
-    df = pd.read_csv('data/tokens_raw.csv')
-    df.drop_duplicates(subset=['pairAddress'], inplace=True)
-    df['pairCreatedAt'] = pd.to_datetime(df['pairCreatedAt'])
-    print('Classifying...')
-    for i, row in df.iterrows():
-        if row['worthy'] == -1:
-            creation_time = row['pairCreatedAt']
-            now = datetime.now()
-            if now - creation_time >= CLASSIFY_DELAY:
-                url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{row['pairAddress']}"
-                # try:
-                async with session.get(url) as response:
-                    cur = (await response.json())['pair']
-                    # Check if the token pair meets the specified criteria
-                    if (cur is None) or (not all(feature in cur.keys() for feature in ['priceUsd', 'fdv', 'liquidity'])):
-                        print(f'Classification of token with address {row["pairAddress"]} failed due to lack of '
-                              f'key feature presence or None response. Setting worthy to 0.')
-                        df.at[i, 'worthy'] = 0
-                    elif (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
-                            cur['fdv'] > row['fdv'] * fdv_mul) and (
-                            cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
-                            cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
-                        print(f'### {row["pairAddress"]} seems worthy ###')
-                        print(
-                            f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
-                        df.at[i, 'worthy'] = 1
-                    else:
-                        print(f'{row["pairAddress"]} not worthy')
-                        df.at[i, 'worthy'] = 0
-                # except TypeError as error:
-                #     print('###################################################################')
-                #     print(error)
-                #     print(f'Classification of token with address {row["pairAddress"]} failed. Setting worthy '
-                #           f'to 0.')
-                #     df.at[i, 'worthy'] = 0
-            else:
-                print(f'{row["pairAddress"]}, pair age: {now - creation_time}')
-    df.to_csv('data/tokens_raw.csv', index=False)
+    async with LOCK:
+        df = pd.read_csv('data/tokens_raw.csv')
+        df.drop_duplicates(subset=['pairAddress'], inplace=True)
+        df['pairCreatedAt'] = pd.to_datetime(df['pairCreatedAt'])
+        print('Classifying...')
+        for i, row in df.iterrows():
+            if row['worthy'] == -1:
+                creation_time = row['pairCreatedAt']
+                now = datetime.now()
+                if (now - creation_time) >= CLASSIFY_DELAY:
+                    url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{row['pairAddress']}"
+                    # try:
+                    async with session.get(url) as response:
+                        cur = (await response.json())['pair']
+                        # Check if the token pair meets the specified criteria
+                        if (cur is None) or (not all(feature in cur.keys() for feature in ['priceUsd', 'fdv', 'liquidity'])):
+                            print(f'Classification of token with address {row["pairAddress"]} failed due to lack of '
+                                  f'key feature presence or None response. Setting worthy to 0.')
+                            df.at[i, 'worthy'] = 0
+                        elif (float(cur['priceUsd']) > float(row['priceUsd']) * price_mul) and (
+                                cur['fdv'] > row['fdv'] * fdv_mul) and (
+                                cur['liquidity']['usd'] > row['liquidity_usd'] * liqU_ml) and (
+                                cur['fdv'] > fdv_min and cur['liquidity']['usd'] > liqU_min):
+                            print(f'### {row["pairAddress"]} seems worthy ###')
+                            print(
+                                f'price_usd: {cur["priceUsd"]}/{row["priceUsd"]} fdv: {cur["fdv"]}/{row["fdv"]} liq_usd: {cur["liquidity"]["usd"]}/{row["liquidity_usd"]}')
+                            df.at[i, 'worthy'] = 1
+                        else:
+                            print(f'{row["pairAddress"]} not worthy')
+                            df.at[i, 'worthy'] = 0
+                    # except TypeError as error:
+                    #     print('###################################################################')
+                    #     print(error)
+                    #     print(f'Classification of token with address {row["pairAddress"]} failed. Setting worthy '
+                    #           f'to 0.')
+                    #     df.at[i, 'worthy'] = 0
+                else:
+                    print(f'{row["pairAddress"]}, pair age: {now - creation_time}')
+        df.to_csv('data/tokens_raw.csv', index=False)
+        df.to_csv('data/tokens_raw_classified.csv', index=False)
 
+
+# Fetch details of valid pairs from dexscreener API
+async def fetch_valid_pairs_details(session: aiohttp.ClientSession, address_list: list[str], verbose: bool = True) -> \
+        list[dict]:
+    url = f"https://api.dexscreener.com/latest/dex/pairs/solana/{','.join(address_list)}"
+    async with session.get(url) as response:
+        response_json = await response.json()
+        valid_pairs = []
+        now = datetime.now(timezone.utc)
+        if response_json['pairs'] is None:
+            print(f'The URL response (pairs list) is None for list of addresses: {address_list}')
+            return valid_pairs
+        for pair in response_json['pairs']:
+            if ('pairCreatedAt' in pair.keys()) and ("pairAddress" in pair.keys()):
+                creation_time = datetime.fromtimestamp(pair['pairCreatedAt'] / 1000, tz=timezone.utc)
+                if SKIP_TIME > (now - creation_time) > LAUNCH_TIME:
+                    valid_pairs.append(pair)
+                    if verbose:
+                        print(f' valid pair address: {pair["pairAddress"]}')
+        return valid_pairs
+
+
+# Fetch new tokens from geckoterminal API
+async def fetch_new_tokens(session: aiohttp.ClientSession) -> dict:
+    url = "https://api.geckoterminal.com/api/v2/networks/solana/new_pools"
+    async with session.get(url) as response:
+        response_json = await response.json()
+        return response_json['data']
 
 # Main loop to continuously fetch, save, and classify tokens
 async def main_loop() -> None:
@@ -211,11 +219,11 @@ async def main_loop() -> None:
                 valid_details = await fetch_valid_pairs_details(session, addresses)
                 if valid_details:
                     print(f"Saving valid pairs {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    await save_to_csv(session, valid_details)
+                    await save_to_csv(valid_details)
                 else:
                     print(f"No valid pairs for now {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             await classify(session)
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
 
 
 if __name__ == "__main__":

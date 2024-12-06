@@ -1,3 +1,5 @@
 NODE_HTTP = 'https://patient-tame-panorama.solana-mainnet.quiknode.pro/162df3d379220ccbdbe6604505ff00f45d17dc5c/'
-binance_API_KEY = 'YWOnH9Qz3HCOAp5NuMUIPJlpjHaI9a2hkHwreRR1pOszRIaMgqHfpNziXrMTCTFn'
-binance_SECRET_KEY = 'W5h6GM5HdBQsV4wJuJCjMjBVmfYO9vnSHnSvoHMlC6W0nuf1hFAg9dpjvk0WXbKq'
+binance_API_KEY = 'pIt3SYbX3lanvcvudMGa80d9spD4koeyACiNjuu7yK01p7Vt6VPSeoyLtOk0NAqf'
+binance_SECRET_KEY = 'rx7C9TKN7bdbz1jPaXJnu33wZb5ZQynaZp27JQgL7jILOweg8D0hvZH5qK9ayyhz'
+TELEGRAM_TOKEN = '7726253154:AAEOXD9jJzaU2j5Gk-hwWbSonr7lQQhKHrk'
+TELEGRAM_CHAT_ID = '5011277677'
