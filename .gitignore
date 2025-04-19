@@ -1,2 +1,7 @@
 /credentials.py
 *.csv
+*.png
+.backup/
+.old/
+.ipynb_checkpoints
+*.pyc
