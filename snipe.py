@@ -2,54 +2,24 @@ import os
 import csv
 import torch
 import math
+import json
 from sentence_transformers import SentenceTransformer
 import pandas as pd
 import numpy as np
 from datetime import timedelta, time, datetime, timezone
 import pytz
-from math import exp
 import joblib
 import aiohttp
 import asyncio
 import webbrowser
-from beepy import beep
-from new_pool_sniper import (
-    ITVS,
-    fetch_valid_pairs_details,
-    fetch_new_tokens,
-    check_credentials
-)
+# from beepy import beep
 from credentials import *
 from binance.um_futures import UMFutures
 from tenacity import retry, stop_after_attempt, wait_exponential
 from collections import deque
 from typing import Tuple, List
-from common import fetch_ta_from_config
+from common import fetch_ta_from_config, check_credentials, fetch_new_tokens
 
-# Additional function to save prediction results to a CSV file
-def save_prediction_record(record, models_mid_date):
-    os.makedirs("preds", exist_ok=True)
-    preds_file = f"preds/{models_mid_date.strftime('%Y%m%d_%H%M%S')}.csv"
-    file_exists = os.path.isfile(preds_file)
-    with open(preds_file, "a", newline='', encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=record.keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(record)
-
-# Function to sort predictions.csv file at startup
-def sort_predictions_file(preds_file: str = "preds/predictions.csv"):
-    if os.path.exists(preds_file):
-        df_preds = pd.read_csv(preds_file, encoding='utf-8')
-        # Konwersja wartości z tekstu (usuwamy znak '%' dla cls_prediction)
-        df_preds["cls_prediction_float"] = df_preds["cls_prediction"].str.rstrip('%').astype(float)
-        df_preds["reg_prediction_float"] = df_preds["reg_prediction"].astype(float)
-        # Sortowanie malejąco - najpierw wg cls_prediction, potem wg reg_prediction
-        df_preds = df_preds.sort_values(by=["cls_prediction_float", "reg_prediction_float"], ascending=False)
-        # Usuwamy pomocnicze kolumny
-        df_preds = df_preds.drop(columns=["cls_prediction_float", "reg_prediction_float"])
-        df_preds.to_csv(preds_file, index=False, encoding="utf-8")
-        print("Predictions file sorted.")
 
 LAUNCH_TIME = timedelta(minutes=0)
 SKIP_TIME = timedelta(minutes=10)
@@ -65,7 +35,7 @@ REG_THRESHOLD_2 = 5.15
 CHAT_IDs = ["5011277677", "7228159263"]
 
 CLS_MODEL_FULLPATH = 'models/final_cls_model.joblib'
-REG_MODEL_FULLPATH = 'models/final_reg_model.joblib'
+# REG_MODEL_FULLPATH = 'models/default_reg_model.joblib'
 
 EMBED_MODEL = 'mixedbread-ai/mxbai-embed-large-v1'
 NAME_INDICES_PATH = "models/important_name_indices.joblib"
@@ -73,39 +43,45 @@ SYMBOL_INDICES_PATH = "models/important_symbol_indices.joblib"
 # TOKENIZED_NEME_DIM = 128
 # TOKENIZED_SYMBOL_DIM = 64
 
-TA_CONFIG = {
-    "BTCUSDT": {
-        "ADOSC": ["1m", "5m", "15m", "1h", "4h"],
-        "OBV": ["1m", "5m", "15m"],
-        "ATR": ["1m", "5m", "15m"],
-        "RSI": ["1m", "5m", "15m", "1h", "4h"],
-        "ULTOSC": ["1m", "5m", "15m", "1h", "4h", "1d"]
-    },
-    "SOLUSDT": {
-        "ADOSC": ["1m", "5m", "15m", "1h", "4h"],
-        "OBV": ["1m", "5m", "15m"],
-        "ATR": ["1m", "5m", "15m"],
-        "RSI": ["1m", "5m", "15m", "1h", "4h"],
-        "ULTOSC": ["1m", "5m", "15m", "1h", "4h", "1d"]
-    }
-}
+with open('models/selected_indicators.json', 'r', encoding='utf-8') as f:
+    TA_CONFIG = json.load(f)
+print(f'TA_CONFIG: {TA_CONFIG}')
+
+# TA_CONFIG = {
+#     "BTCUSDT": {
+#         "ADOSC": ["1m", "5m", "15m", "1h", "4h"],
+#         "OBV": ["1m", "5m", "15m"],
+#         "ATR": ["1m", "5m", "15m"],
+#         "RSI": ["1m", "5m", "15m", "1h", "4h"],
+#         "ULTOSC": ["1m", "5m", "15m", "1h", "4h", "1d"]
+#     },
+#     "SOLUSDT": {
+#         "ADOSC": ["1m", "5m", "15m", "1h", "4h"],
+#         "OBV": ["1m", "5m", "15m"],
+#         "ATR": ["1m", "5m", "15m"],
+#         "RSI": ["1m", "5m", "15m", "1h", "4h"],
+#         "ULTOSC": ["1m", "5m", "15m", "1h", "4h", "1d"]
+#     }
+# }
 
 COLS_TO_DROP = [
     "worthy",
-    "pairCreatedAt"
+    "pairCreatedAt",
+    "fdv", "liq_fdv_ratio"
 ]
 
 MAX_CONCURRENT_REQUESTS = 30  # Limit równoległych zapytań
 SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-DEX_MAPPING = {
-    "raydium": 6,
-    "fluxbeam": 5,
-    "meteora": 4,
-    "pumpswap": 3,
-    "orca": 2,
-    "pumpfunamm": 1
-}
+DEX_MAPPING = {'pumpswap': 0.35431125001784647,
+ 'raydium': 0.35061995350835407,
+ 'fluxbeam': 0.24501045477967087,
+ 'meteora': 0.04375562163432023,
+ 'heaven': 0.0031409766360659397,
+ 'orca': 0.002968352713505291,
+ 'meteoradbc': 0.00016094260449263492,
+ 'pumpfunamm': 3.1150181514703535e-05,
+ 'dexlab': 1.297924229779314e-06}
 # ======================================================================
 # SESSION FEATURE SETUP
 # ======================================================================
@@ -218,6 +194,32 @@ def compute_session_feature(row, session_info):
         return feature
 
 
+# Additional function to save prediction results to a CSV file
+def save_prediction_record(record, models_mid_date):
+    os.makedirs("preds", exist_ok=True)
+    preds_file = f"preds/{models_mid_date.strftime('%Y%m%d_%H%M%S')}.csv"
+    file_exists = os.path.isfile(preds_file)
+    with open(preds_file, "a", newline='', encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=record.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(record)
+
+# Function to sort predictions.csv file at startup
+def sort_predictions_file(preds_file: str = "preds/predictions.csv"):
+    if os.path.exists(preds_file):
+        df_preds = pd.read_csv(preds_file, encoding='utf-8')
+        # Konwersja wartości z tekstu (usuwamy znak '%' dla cls_prediction)
+        df_preds["cls_prediction_float"] = df_preds["cls_prediction"].str.rstrip('%').astype(float)
+        df_preds["reg_prediction_float"] = df_preds["reg_prediction"].astype(float)
+        # Sortowanie malejąco - najpierw wg cls_prediction, potem wg reg_prediction
+        df_preds = df_preds.sort_values(by=["cls_prediction_float", "reg_prediction_float"], ascending=False)
+        # Usuwamy pomocnicze kolumny
+        df_preds = df_preds.drop(columns=["cls_prediction_float", "reg_prediction_float"])
+        df_preds.to_csv(preds_file, index=False, encoding="utf-8")
+        print("Predictions file sorted.")
+
+        
 # Circuit Breaker
 class CircuitBreaker:
     def __init__(self, max_failures=3, reset_timeout=60):
@@ -357,7 +359,7 @@ async def get_features_df(detail: dict, tas_dict: dict = None) -> pd.DataFrame:
             "txns_h1_sells": detail["txns"]["h1"]["sells"],
             "txns_h6_buys": detail["txns"]["h6"]["buys"],
             "txns_h6_sells": detail["txns"]["h6"]["sells"],
-            "txns_h24_buy": detail["txns"]["h24"]["buys"],
+            "txns_h24_buys": detail["txns"]["h24"]["buys"],
             "txns_h24_sells": detail["txns"]["h24"]["sells"],
             "volume_h24": detail["volume"]["h24"],
             "volume_h6": detail["volume"]["h6"],
@@ -448,13 +450,15 @@ async def main():
     # Load models
     embed_model = SentenceTransformer(EMBED_MODEL, device=device)
     cls_model = joblib.load(CLS_MODEL_FULLPATH)
-    reg_model = joblib.load(REG_MODEL_FULLPATH)
+    # reg_model = joblib.load(REG_MODEL_FULLPATH)
 
     # Get model file creation dates
     cls_model_date = datetime.fromtimestamp(os.path.getmtime(CLS_MODEL_FULLPATH), tz=timezone.utc)
-    reg_model_date = datetime.fromtimestamp(os.path.getmtime(REG_MODEL_FULLPATH), tz=timezone.utc)
+    # reg_model_date = datetime.fromtimestamp(os.path.getmtime(REG_MODEL_FULLPATH), tz=timezone.utc)
+    reg_model_date = cls_model_date
 
-    mid_timestamp = (cls_model_date.timestamp() + reg_model_date.timestamp()) / 2
+    # mid_timestamp = (cls_model_date.timestamp() + reg_model_date.timestamp()) / 2
+    mid_timestamp = cls_model_date.timestamp()
     mid_model_date = datetime.fromtimestamp(mid_timestamp, tz=timezone.utc)
 
     async with aiohttp.ClientSession() as session:
@@ -496,7 +500,8 @@ async def main():
                             processor["seen_addresses"].append(pair["pairAddress"])
                             input_data = await get_input(df=features_df.copy(), scaler=None, embed_model=embed_model, name_indices=NAME_INDICES, symbol_indices=SYMBOL_INDICES)
                             cls_proba = cls_model.predict_proba(input_data)[0][1]
-                            reg_proba = reg_model.predict(input_data)[0]
+                            # reg_proba = reg_model.predict(input_data)[0]
+                            reg_proba = 0
 
                             cls_proba_adj = cls_proba * CLS_PRECISION
 
@@ -513,7 +518,7 @@ async def main():
                                 "reg_model_creation": reg_model_date.strftime("%Y-%m-%d %H:%M:%S")
                             }
 
-                            if (cls_proba >= CLS_THRESHOLD_2) or (reg_proba >= REG_THRESHOLD_2):
+                            if (cls_proba >= CLS_THRESHOLD_2):
                                     print("##################################################")
                                     print(f"🔔🔔🔔 POTĘŻNY TOKEN (dla jego)! 🔔🔔🔔")
                                     print(f"Classification predition: {cls_proba * 100:.2f}%  (adjusted {cls_proba_adj* 100:.2f}%)")
@@ -535,11 +540,11 @@ async def main():
                                         session, message, CHAT_IDs
                                     )
                                     webbrowser.open(pair["url"])
-                                    for _ in range(5):
-                                        beep(sound="coin")
-                            elif (cls_proba >= CLS_THRESHOLD_1) or (reg_proba >= REG_THRESHOLD_1):
-                                for _ in range(1):
-                                    beep(sound="coin")
+                                    # for _ in range(5):
+                                    #     beep(sound="coin")
+                            elif (cls_proba >= CLS_THRESHOLD_1):
+                                # for _ in range(1):
+                                #     beep(sound="coin")
                                 print("##################################################")
                                 print(f"Classification predition: {cls_proba * 100:.2f}%  (adjusted {cls_proba_adj* 100:.2f}%)")
                                 print(f"Regression predition: {reg_proba:.6f}  (suggested per Sol stake: {(reg_proba*cls_proba)*0.01:.6f} Sol)\n")

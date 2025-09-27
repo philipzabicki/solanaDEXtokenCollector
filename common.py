@@ -1,17 +1,49 @@
 import talib
+import aiohttp
+import numpy as np
 from binance.um_futures import UMFutures
+from typing import Dict, List
 from numpy import asarray
 from re import sub
 from unicodedata import category
 
 indicator_params = {
-        "ADOSC": "ohlcv['high'], ohlcv['low'], ohlcv['close'], ohlcv['volume']",
-        "OBV":   "ohlcv['close'], ohlcv['volume']",
-        "ATR":   "ohlcv['high'], ohlcv['low'], ohlcv['close']",
-        "RSI":   "ohlcv['close']",
-        "ULTOSC": "ohlcv['high'], ohlcv['low'], ohlcv['close']"
-    }
+    "ADX":       ["high", "low", "close"],
+    "ADOSC":     ["high", "low", "close", "volume"],
+    "APO":       ["close"],
+    "AROONOSC":  ["high", "low"],
+    "BOP":       ["open", "high", "low", "close"],
+    "CCI":       ["high", "low", "close"],
+    "CMO":       ["close"],
+    "MFI":       ["high", "low", "close", "volume"],
+    "MOM":       ["close"],
+    "NATR":      ["high", "low", "close"],
+    "ROCP":      ["close"],
+    "RSI":       ["close"],          # ← dodany wskaźnik
+    "STOCHF":    ["high", "low", "close"],
+    "STOCHRSI":  ["close"],
+    "ULTOSC":    ["high", "low", "close"],
+    "WILLR":     ["high", "low", "close"],
+}
 
+def check_credentials(api_key: str, secret_key: str) -> None:
+    if not api_key or not secret_key:
+        raise ValueError(
+            "Binance API key and secret key must be provided in credentials.py.\n"
+            "It's used to collect real-time market data from exchange for features extraction.\n"
+            "Please open the credentials.py file and ensure it contains the following lines with your API credentials:\n\n"
+            "binance_API_KEY = 'your_api_key_here'\n"
+            "binance_SECRET_KEY = 'your_secret_key_here'\n\n"
+            "How to get API: https://www.binance.com/pl/binance-api"
+        )
+
+
+async def fetch_new_tokens(session: aiohttp.ClientSession) -> dict:
+    url = "https://api.geckoterminal.com/api/v2/networks/solana/new_pools"
+    async with session.get(url) as response:
+        response_json = await response.json()
+        return response_json["data"]
+    
 
 def clean_string(s):
     if isinstance(s, str):
@@ -25,35 +57,31 @@ def clean_string(s):
         return s
 
 
-def fetch_ta_from_config(client: UMFutures, config: dict, klines_limit=100) -> dict:
-    # Using TA-Lib abstract interface to dynamically call indicator functions.
+def fetch_ta_from_config(client, config, klines_limit=100):
     ta_data = {}
-    # Iterate over each symbol and its associated indicators.
     for symbol, indicators in config.items():
-        for indicator, intervals in indicators.items():
-            indicator_upper = indicator.upper()
-            if indicator_upper not in indicator_params:
-                raise ValueError(f"Indicator '{indicator}' is not implemented.")
-            param_str = indicator_params[indicator_upper]
-            
-            # Process each specified time interval.
-            for interval in intervals:
-                # Fetch OHLCV data; assume data columns order: [open, high, low, close, volume].
-                data = asarray(client.klines(symbol=symbol, interval=interval, limit=klines_limit)).astype(float)[:, 1:6]
-                ohlcv = {
-                    'open': data[:, 0],
-                    'high': data[:, 1],
-                    'low': data[:, 2],
-                    'close': data[:, 3],
-                    'volume': data[:, 4],
-                }
-                # Build the evaluation string for the TA-Lib function call.
-                eval_str = f"talib.{indicator_upper}({param_str})"
-                # Evaluate the function call and get the last result.
-                result = eval(eval_str)[-1]
-                # Build a unique key and store the calculated indicator.
-                ta_data[f"{symbol}_{indicator_upper}_{interval}"] = result
-
+        # odwracamy mapping: dla każdego interwału lista wskaźników
+        intervals_map = {}
+        for ind, ivals in indicators.items():
+            up = ind.upper()
+            if up not in indicator_params:
+                raise ValueError(f"Indicator '{ind}' is not implemented.")
+            for interval in ivals:
+                intervals_map.setdefault(interval, []).append(up)
+        for interval, inds in intervals_map.items():
+            raw = np.asarray(
+                client.klines(symbol=symbol, interval=interval, limit=klines_limit),
+                dtype=float
+            )
+            raw = raw[:-1]  # odrzucamy ostatnią niezamkniętą świecę
+            o, h, l, c, v = raw[:,1], raw[:,2], raw[:,3], raw[:,4], raw[:,5]
+            ohlcv = {"open": o, "high": h, "low": l, "close": c, "volume": v}
+            for up in inds:
+                fn = getattr(talib, up)
+                args = [ohlcv[p] for p in indicator_params[up]]
+                res = fn(*args)
+                arr = res[-1] if isinstance(res, tuple) else res
+                ta_data[f"{symbol}{interval}_{up}"] = float(arr[-1])
     return ta_data
 
 
