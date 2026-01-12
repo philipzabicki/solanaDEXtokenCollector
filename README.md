@@ -1,8 +1,8 @@
-# Solana DEX Token Collector
+# solana-new-pool-classification
 
 ## Overview
 
-Solana DEX Token Collector is a data + ML pipeline for discovering, enriching, and scoring newly created liquidity pools on Solana DEXs. It continuously ingests pool metadata, augments it with technical analysis (TA) signals from Binance futures, and applies trained ML models to identify potentially interesting token pairs.
+Data + ML pipeline for discovering, enriching, and scoring newly created liquidity pools on Solana DEXs. It continuously ingests pool metadata, augments it with technical analysis (TA) signals from Binance futures, and applies trained ML models to identify potentially interesting token pairs.
 
 The project is designed for:
 
