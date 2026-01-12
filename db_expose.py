@@ -5,31 +5,35 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 
-DB_FILE = "data/tokens_raw.db"       # ta sama ścieżka co w db_collector.py
+DB_FILE = "data/tokens_raw.db"  # ta sama ścieżka co w db_collector.py
 app = FastAPI(title="Tokens API")
 
 # — pozwalamy sobie łączyć się zdalnie z przeglądarki lub Postmana —
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # produkcyjnie wpisz konkretną domenę/IP
+    allow_origins=["*"],  # produkcyjnie wpisz konkretną domenę/IP
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
 
 def read_only_conn() -> str:
     """Open SQLite in read-only mode so writes z db_collector nie są blokowane."""
     return f"file:{DB_FILE}?mode=ro&cache=shared"
 
+
 @app.get("/download-db")
 async def download_db():
     async def file_chunks(path: str, chunk_size: int = 8192):
         with open(path, "rb") as f:
-            while (block := f.read(chunk_size)):
+            while block := f.read(chunk_size):
                 yield block
+
     headers = {"Content-Disposition": "attachment; filename=tokens_raw.db"}
     return StreamingResponse(
         file_chunks(DB_FILE), media_type="application/octet-stream", headers=headers
     )
+
 
 @app.get("/dump")
 async def dump_tokens():
@@ -47,6 +51,7 @@ async def dump_tokens():
 
             async def iter_csv():
                 import csv, io
+
                 buff = io.StringIO()
                 writer = csv.writer(buff)
 
@@ -54,7 +59,8 @@ async def dump_tokens():
                 if yield_header:
                     writer.writerow(cols)
                     yield buff.getvalue()
-                    buff.seek(0); buff.truncate(0)
+                    buff.seek(0)
+                    buff.truncate(0)
                     yield_header = False
                     writer.writerow(first_row)
 
@@ -62,11 +68,13 @@ async def dump_tokens():
                 async for row in cursor:
                     writer.writerow(row)
                     yield buff.getvalue()
-                    buff.seek(0); buff.truncate(0)
+                    buff.seek(0)
+                    buff.truncate(0)
 
             headers = {"Content-Disposition": "attachment; filename=tokens.csv"}
             return StreamingResponse(iter_csv(), media_type="text/csv", headers=headers)
-        
+
+
 @app.get("/tokens-since")
 async def tokens_since(created_after: str, limit: int = 100000, order: str = "ASC"):
     """
@@ -95,6 +103,7 @@ async def tokens_since(created_after: str, limit: int = 100000, order: str = "AS
 
                 async def iter_csv():
                     import csv, io
+
                     buff = io.StringIO()
                     writer = csv.writer(buff)
 
@@ -102,17 +111,23 @@ async def tokens_since(created_after: str, limit: int = 100000, order: str = "AS
                     if not sent_header:
                         writer.writerow(cols)
                         yield buff.getvalue()
-                        buff.seek(0); buff.truncate(0)
+                        buff.seek(0)
+                        buff.truncate(0)
                         sent_header = True
                         writer.writerow(first_row)
 
                     async for row in cursor:
                         writer.writerow(row)
                         yield buff.getvalue()
-                        buff.seek(0); buff.truncate(0)
+                        buff.seek(0)
+                        buff.truncate(0)
 
-                headers = {"Content-Disposition": "attachment; filename=tokens_since.csv"}
-                return StreamingResponse(iter_csv(), media_type="text/csv", headers=headers)
+                headers = {
+                    "Content-Disposition": "attachment; filename=tokens_since.csv"
+                }
+                return StreamingResponse(
+                    iter_csv(), media_type="text/csv", headers=headers
+                )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
@@ -130,6 +145,7 @@ async def list_tokens(limit: int = 100, offset: int = 0):
         rows = await db.execute_fetchall(query, (limit, offset))
     return [dict(r) for r in rows]
 
+
 @app.get("/token/{pair_address}")
 async def get_token(pair_address: str):
     query = "SELECT * FROM tokens WHERE pairAddress = ?;"
@@ -139,6 +155,7 @@ async def get_token(pair_address: str):
     if row is None:
         raise HTTPException(status_code=404, detail="Token not found")
     return dict(row)
+
 
 if __name__ == "__main__":
     # uruchom serwer na wszystkich interfejsach, port 8000
